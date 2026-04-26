@@ -43,7 +43,7 @@
       user:
          name: librenms
          system: yes
-         createhome: yes
+         createhome: no
          home: /opt/librenms
      
     - name: Clone LibreNMS repository
@@ -64,3 +64,32 @@
       args:
         chdir: /opt/librenms
       become_user: librenms
+    
+    - name: Configure MariaDB
+      copy:
+        dest: /etc/mysql/mariadbconf.d/50-librenms.cnf
+        content: |
+          [mysqld]
+          innodb_file_per_table=1
+          lower_case_table_names=0
+
+    - name: Restart MariaDB
+      service:
+        name: mariadb
+        state: restarted
+        enabled: yes
+
+    - name: Create LibreNMS database
+      mysql_db:
+        name: librenms
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+
+    - name: Create LibreNMs database user
+      mysql_user:
+        name: librenms
+        password: "{{ librenms_db_password }}"
+        priv: "librenms.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
