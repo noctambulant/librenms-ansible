@@ -1,0 +1,66 @@
+---
+- hosts: librenms
+  become: true
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    
+    - name: Install required packages
+      apt:
+        name:
+          - acl
+          - curl
+          - fping
+          - git
+          - graphviz
+          - imagemagick
+          - mariadb-client
+          - mariadb-server
+          - mtr-tiny
+          - nginx
+          - nmap
+          - php8.3-cli
+          - php8.3-curl
+          - php8.3-fpm
+          - php8.3-gd
+          - php8.3-gmp
+          - php8.3-mbstring
+          - php8.3-mysql
+          - php8.3-snmp
+          - php8.3-xml
+          - python3-pymysql
+          - rrdtool
+          - snmp
+          - snmpd
+          - unzip
+          - whois
+        state: present
+
+     - name: Add librenms user
+       user:
+         name: librenms
+         system: yes
+         createhome: yes
+         home: /opt/librenms
+     
+     - name: Clone LibreNMS repository
+       git:
+         repo: https://github.com/librenms/librenms.git
+         dest: /opt/librenms
+         version: master
+
+     - name: Set ownership of LibreNMS directory
+       file:
+         path: /opt/librenms
+         owner: librenms
+         group: librenms
+         recurse: yes
+
+      - name: Install PHP dependencies via composer
+        command: ./scripts/composer_wrapper.php install --no-dev
+        args:
+          chdir: /opt/librenms
+        become_user: librenms
