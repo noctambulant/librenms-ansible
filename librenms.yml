@@ -51,6 +51,9 @@
          repo: https://github.com/librenms/librenms.git
          dest: /opt/librenms
          version: master
+         update: yes
+         force: yes
+      become_user: librenms
 
     - name: Set ownership of LibreNMS directory
       file:
