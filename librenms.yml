@@ -70,7 +70,7 @@
     
     - name: Configure MariaDB
       copy:
-        dest: /etc/mysql/mariadbconf.d/50-librenms.cnf
+        dest: /etc/mysql/mariadb.conf.d/50-librenms.cnf
         content: |
           [mysqld]
           innodb_file_per_table=1
