@@ -1,13 +1,15 @@
 ---
 - hosts: librenms
   become: true
+  vars_files:
+    - vars/secrets.yml
 
   tasks:
     - name: Update apt cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
-    
+
     - name: Install required packages
       apt:
         name:
@@ -45,7 +47,7 @@
          system: yes
          createhome: no
          home: /opt/librenms
-     
+
     - name: Clone LibreNMS repository
       git:
          repo: https://github.com/librenms/librenms.git
@@ -67,7 +69,7 @@
       args:
         chdir: /opt/librenms
       become_user: librenms
-    
+
     - name: Configure MariaDB
       copy:
         dest: /etc/mysql/mariadb.conf.d/50-librenms.cnf
@@ -93,6 +95,151 @@
       mysql_user:
         name: librenms
         password: "{{ librenms_db_password }}"
-        priv: "librenms.*:ALL"
+        priv: "librenms.*:ALL,GRANT"
         state: present
         login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Check librenms database
+      community.mysql.mysql_query:
+        login_user: librenms
+        login_password: "{{ librenms_db_password }}"
+        login_db: librenms
+        query: "SHOW TABLES;"
+      register: db_result
+
+    - name: Show database result
+      debug:
+        var: db_result
+
+    - name: Configure PHP-FPM for LibreNMS
+      copy:
+        dest: /etc/php/8.3/fpm/pool.d/librenms.conf
+        content: |
+          [librenms]
+          user = librenms
+          group = librenms
+          listen = /run/php-fpm-librenms.sock
+          listen.owner = librenms
+          listen.group = www-data
+          listen.mode = 0660
+          pm = dynamic
+          pm.max_children = 5
+          pm.start_servers = 2
+          pm.min_spare_servers = 1
+          pm.max_spare_servers = 3
+          chdir = /
+
+    - name: Remove default PHP-FPM pool
+      file:
+        path: /etc/php/8.3/fpm/pool.d/www.conf
+        state: absent
+
+    - name: Configure nginx for LibreNMS
+      copy:
+        dest: /etc/nginx/conf.d/librenms.conf
+        content: |
+          server {
+            listen 80;
+            server_name _;
+            root /opt/librenms/html;
+            index index.php;
+
+            charset utf-8;
+            gzip on;
+            gzip_types text/css application/javascript text/javascript application/x-javascript image/svg+xml text/plain text/xsd text/xsl text/xml image/x-icon;
+
+            location / {
+              try_files $uri $uri/ /index.php?$query_string;
+            }
+
+            location ~ [^/]\.php(/|$) {
+              fastcgi_pass unix:/run/php-fpm-librenms.sock;
+              fastcgi_split_path_info ^(.+\.php)(/.+)$;
+              include fastcgi.conf;
+            }
+
+            location ~ /\.(?!well-known).* {
+              deny all;
+            }
+          }
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Set correct permissions on LibreNMS directory
+      file:
+        path: /opt/librenms
+        owner: librenms
+        group: librenms
+        recurse: yes
+    - name: Add www-data to librenms group
+      user:
+        name: www-data
+        groups: librenms
+        append: yes
+
+    - name: Set ACL permissions for logs and rrd
+      command: "{{ item }}"
+      loop:
+        - setfacl -d -m g::rwx /opt/librenms/rrd /opt/librenms/logs /opt/librenms/bootstrap/cache/ /opt/librenms/storage/
+        - setfacl -R -m g::rwx /opt/librenms/rrd /opt/librenms/logs /opt/librenms/bootstrap/cache/ /opt/librenms/storage/
+
+    - name: Restart PHP-FPM
+      service:
+        name: php8.3-fpm
+        state: restarted
+        enabled: yes
+
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    - name: Configure LibreNMS cron job
+      copy:
+        src: /opt/librenms/dist/librenms.cron
+        dest: /etc/cron.d/librenms
+        remote_src: yes
+
+    - name: Configure LibreNMS logrotate
+      copy:
+        src: /opt/librenms/misc/librenms.logrotate
+        dest: /etc/logrotate.d/librenms
+        remote_src: yes
+    - name: Copy .env.example to .env
+      copy:
+        src: /opt/librenms/.env.example
+        dest: /opt/librenms/.env
+        remote_src: yes
+      tags: env_setup
+    - name: Configure .env settings
+      lineinfile:
+        path: /opt/librenms/.env
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: "APP_URL", value: "10.0.0.9" }
+        - { key: "DB_HOST", value: "localhost" }
+        - { key: "DB_DATABASE", value: "librenms" }
+        - { key: "DB_USERNAME", value: "librenms" }
+        - { key: "DB_PASSWORD", value: "{{ librenms_db_password }}" }
+      tags: env_setup
+    - name: Generate new LibreNMS .env file
+      command: php /opt/librenms/artisan key:generate --force
+      become_user: librenms
+      args:
+        chdir: /opt/librenms
+      tags: env_setup
+    - name: Remove Ansible managed block
+      blockinfile:
+        path: /opt/librenms/.env
+        state: absent
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+      tags: conf_block_cleanup
+
+    - name: Run LibreNMS database migrations
+      command: php /opt/librenms/artisan migrate --force
+      become_user: librenms
